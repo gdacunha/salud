@@ -1,0 +1,1 @@
+// this will be a food object's class which will store the food data from the open food facts api calls
