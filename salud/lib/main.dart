@@ -1,6 +1,8 @@
 // main.dart
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'models/product.dart';
+import 'services/openfoodfacts_service.dart';
 
 void main() {
   runApp(const MyApp());
