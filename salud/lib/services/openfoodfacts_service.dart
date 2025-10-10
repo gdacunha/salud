@@ -3,27 +3,37 @@
 // api base url: 'https://world.openfoodfacts.org/api/v2'
 // api staging url (used for testing): 'https://world.openfoodfacts.net'
 
-import 'dart:convert';
-import 'package:http/http.dart' as http;
-import '../models/product.dart';
+import 'package:openfoodfacts/openfoodfacts.dart' as off;
 
-// Class defines functions that interact with the Open Food Facts API
 class OpenFoodFactsService {
-  static const String baseUrl = 'https://world.openfoodfacts.net';
+  // Initialize the OpenFoodFacts API configuration
+  static void initialize() {
+    off.OpenFoodAPIConfiguration.userAgent = off.UserAgent(
+      name: 'Salud',
+      url: 'https://github.com/gdacunha/salud',
+    );
+    off.OpenFoodAPIConfiguration.globalLanguages = <off.OpenFoodFactsLanguage>[
+      off.OpenFoodFactsLanguage.ENGLISH
+    ];
+    off.OpenFoodAPIConfiguration.globalCountry = off.OpenFoodFactsCountry.USA;
+  }
 
-  static Future<Product?> getProductByBarcode(String barcode) async {
+  // Get product by barcode using the official package
+  static Future<off.Product?> getProductByBarcode(String barcode) async {
     try {
-      final url = Uri.parse('$baseUrl/product/$barcode.json');
-      final response = await http.get(url);
+      final configuration = off.ProductQueryConfiguration(
+        barcode,
+        language: off.OpenFoodFactsLanguage.ENGLISH,
+        fields: [
+          off.ProductField.ALL, // Get all available fields
+        ],
+        version: off.ProductQueryVersion.v3,
+      );
 
-      // If success
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        
-        // Check if product exists
-        if (data['status'] == 1 && data['product'] != null) {
-          return Product.fromJson(data['product']);
-        }
+      final result = await off.OpenFoodAPIClient.getProductV3(configuration);
+
+      if (result.status == off.ProductResultV3.statusSuccess && result.product != null) {
+        return result.product;
       }
       return null;
     } catch (e) {
@@ -32,30 +42,23 @@ class OpenFoodFactsService {
     }
   }
 
-  // Search products by name
-  static Future<List<Product>> searchProducts(String searchTerm) async {
+  // Search products by name using the official package
+  static Future<List<off.Product>> searchProducts(String searchTerm) async {
     try {
-      final url = Uri.parse('$baseUrl/cgi/search.pl')
-          .replace(queryParameters: {
-        'search_terms': searchTerm,
-        'json': '1',
-        'page_size': '10',
-        'page': '1',
-      });
+      final configuration = off.ProductSearchQueryConfiguration(
+        parametersList: <off.Parameter>[
+          off.SearchTerms(terms: [searchTerm]),
+        ],
+        version: off.ProductQueryVersion.v3
+      );
 
-      final response = await http.get(url);
+      final result = await off.OpenFoodAPIClient.searchProducts(
+        null,
+        configuration,
+      );
 
-      // If success
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        
-        // Check if products exist
-        if (data['products'] != null) {
-          // Convert list of products to Product object and return list of Product objects
-          return (data['products'] as List)
-              .map((productJson) => Product.fromJson(productJson))
-              .toList();
-        }
+      if (result.products != null && result.products!.isNotEmpty) {
+        return result.products!;
       }
       return [];
     } catch (e) {
@@ -65,28 +68,26 @@ class OpenFoodFactsService {
   }
 
   // Get products by category for recommendation system
-  static Future<List<Product>> getProductsByCategory(String category) async {
+  static Future<List<off.Product>> getProductsByCategory(String category) async {
     try {
-      final url = Uri.parse('$baseUrl/cgi/search.pl')
-          .replace(queryParameters: {
-        'tagtype_0': 'categories',
-        'tag_contains_0': 'contains',
-        'tag_0': category,
-        'json': '1',
-        'page_size': '20',
-        'page': '1',
-      });
+      final configuration = off.ProductSearchQueryConfiguration(
+        parametersList: <off.Parameter>[
+          //off.SearchTerms(terms: [searchTerm]),
+          off.TagFilter.fromType(
+            tagFilterType: off.TagFilterType.CATEGORIES,
+            tagName: category,
+          ),
+        ],
+        version: off.ProductQueryVersion.v3
+      );
 
-      final response = await http.get(url);
+      final result = await off.OpenFoodAPIClient.searchProducts(
+        null,
+        configuration,
+      );
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        
-        if (data['products'] != null) {
-          return (data['products'] as List)
-              .map((productJson) => Product.fromJson(productJson))
-              .toList();
-        }
+      if (result.products != null && result.products!.isNotEmpty) {
+        return result.products!;
       }
       return [];
     } catch (e) {
