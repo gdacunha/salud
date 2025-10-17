@@ -1,10 +1,13 @@
 // main.dart
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'models/product.dart';
+import 'package:openfoodfacts/openfoodfacts.dart' as off;
 import 'services/openfoodfacts_service.dart';
 
 void main() {
+  // Initialize the OpenFoodFacts API configuration
+  OpenFoodFactsService.initialize();
+  
   runApp(const MyApp());
 }
 
@@ -34,20 +37,60 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  List<String> scannedCodes = [];
+  List<off.Product> scannedProducts = [];
+  bool _isLoading = false;
 
-  void _addScannedCode(String code) {
+  void _addScannedProduct(off.Product product) {
     setState(() {
-      if (!scannedCodes.contains(code)) {
-        scannedCodes.insert(0, code);
+      // Check if product already exists by barcode
+      bool exists = scannedProducts.any((p) => p.barcode == product.barcode);
+      if (!exists) {
+        scannedProducts.insert(0, product);
       }
     });
   }
 
   void _clearHistory() {
     setState(() {
-      scannedCodes.clear();
+      scannedProducts.clear();
     });
+  }
+
+  Future<void> _handleScannedBarcode(String barcode) async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final product = await OpenFoodFactsService.getProductByBarcode(barcode);
+      
+      if (product != null) {
+        _addScannedProduct(product);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Product not found for barcode: $barcode'),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error fetching product: $e'),
+            duration: const Duration(seconds: 2),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
 
   @override
@@ -57,7 +100,7 @@ class _MyHomePageState extends State<MyHomePage> {
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         title: Text(widget.title),
         actions: [
-          if (scannedCodes.isNotEmpty)
+          if (scannedProducts.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.clear_all),
               onPressed: _clearHistory,
@@ -65,91 +108,236 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Icon(
-              Icons.qr_code_scanner,
-              size: 100,
-              color: Color.fromRGBO(101, 215, 190, 1),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'Welcome to Salud (Alpha)',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'Tap the button below to start scanning barcodes and QR codes',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 16, color: Colors.grey),
-            ),
-            const SizedBox(height: 40),
-            ElevatedButton.icon(
-              onPressed: () async {
-                final result = await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const BarcodeScannerPage(),
+      body: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: <Widget>[
+                const Icon(
+                  Icons.qr_code_scanner,
+                  size: 100,
+                  color: Color.fromRGBO(101, 215, 190, 1),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Welcome to Salud (Alpha)',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
                   ),
-                );
-                if (result != null) {
-                  _addScannedCode(result);
-                }
-              },
-              icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('Start Scanning'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
-                textStyle: const TextStyle(fontSize: 18),
-              ),
-            ),
-            const SizedBox(height: 30),
-            if (scannedCodes.isNotEmpty) ...[
-              const Divider(),
-              const Text(
-                'Scan History:',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 10),
-              Expanded(
-                child: ListView.builder(
-                  itemCount: scannedCodes.length,
-                  itemBuilder: (context, index) {
-                    return Card(
-                      child: ListTile(
-                        leading: const Icon(Icons.qr_code),
-                        title: Text(
-                          scannedCodes[index],
-                          style: const TextStyle(fontFamily: 'monospace'),
-                        ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.copy),
-                          onPressed: () {
-                            // Copy to clipboard functionality would go here
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Copied: ${scannedCodes[index]}'),
-                                duration: const Duration(seconds: 2),
-                              ),
-                            );
-                          },
-                        ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Tap the button below to start scanning barcodes and QR codes',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                ),
+                const SizedBox(height: 40),
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    final result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const BarcodeScannerPage(),
                       ),
                     );
+                    if (result != null) {
+                      await _handleScannedBarcode(result);
+                    }
                   },
+                  icon: const Icon(Icons.qr_code_scanner),
+                  label: const Text('Start Scanning'),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+                    textStyle: const TextStyle(fontSize: 18),
+                  ),
+                ),
+                const SizedBox(height: 30),
+                if (scannedProducts.isNotEmpty) ...[
+                  const Divider(),
+                  const Text(
+                    'Scanned Products:',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: scannedProducts.length,
+                      itemBuilder: (context, index) {
+                        final product = scannedProducts[index];
+                        return Card(
+                          child: ListTile(
+                            leading: product.imageFrontSmallUrl != null || product.imageFrontUrl != null
+                                ? ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Image.network(
+                                      product.imageFrontSmallUrl ?? product.imageFrontUrl!,
+                                      width: 50,
+                                      height: 50,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (context, error, stackTrace) {
+                                        return const Icon(Icons.food_bank, size: 50);
+                                      },
+                                    ),
+                                  )
+                                : const Icon(Icons.food_bank, size: 50),
+                            title: Text(
+                              product.productName ?? 'Unknown Product',
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (product.brands != null && product.brands!.isNotEmpty)
+                                  Text(product.brands!),
+                                Text(
+                                  'Barcode: ${product.barcode}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontFamily: 'monospace',
+                                    color: Colors.grey,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.info_outline),
+                              onPressed: () {
+                                _showProductDetails(context, product);
+                              },
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (_isLoading)
+            Container(
+              color: Colors.black.withOpacity(0.5),
+              child: const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        Color.fromRGBO(101, 215, 190, 1),
+                      ),
+                    ),
+                    SizedBox(height: 16),
+                    Text(
+                      'Fetching product information...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ],
-          ],
-        ),
+            ),
+        ],
       ),
     );
+  }
+
+  void _showProductDetails(BuildContext context, off.Product product) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(product.productName ?? 'Unknown Product'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (product.imageFrontUrl != null)
+                Center(
+                  child: Image.network(
+                    product.imageFrontUrl!,
+                    height: 150,
+                    errorBuilder: (context, error, stackTrace) {
+                      return const Icon(Icons.food_bank, size: 100);
+                    },
+                  ),
+                ),
+              const SizedBox(height: 16),
+              if (product.brands != null && product.brands!.isNotEmpty) ...[
+                const Text('Brand:', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(product.brands!),
+                const SizedBox(height: 8),
+              ],
+              const Text('Barcode:', style: TextStyle(fontWeight: FontWeight.bold)),
+              Text(product.barcode ?? 'Unknown'),
+              const SizedBox(height: 8),
+              if (product.nutriments != null) ...[
+                const Text('Nutrition (per 100g):', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                if (product.nutriments!.getValue(off.Nutrient.energyKCal, off.PerSize.oneHundredGrams) != null)
+                  Text('Energy: ${product.nutriments!.getValue(off.Nutrient.energyKCal, off.PerSize.oneHundredGrams)} kcal'),
+                if (product.nutriments!.getValue(off.Nutrient.proteins, off.PerSize.oneHundredGrams) != null)
+                  Text('Protein: ${product.nutriments!.getValue(off.Nutrient.proteins, off.PerSize.oneHundredGrams)}g'),
+                if (product.nutriments!.getValue(off.Nutrient.carbohydrates, off.PerSize.oneHundredGrams) != null)
+                  Text('Carbs: ${product.nutriments!.getValue(off.Nutrient.carbohydrates, off.PerSize.oneHundredGrams)}g'),
+                if (product.nutriments!.getValue(off.Nutrient.sugars, off.PerSize.oneHundredGrams) != null)
+                  Text('Sugars: ${product.nutriments!.getValue(off.Nutrient.sugars, off.PerSize.oneHundredGrams)}g'),
+                if (product.nutriments!.getValue(off.Nutrient.fat, off.PerSize.oneHundredGrams) != null)
+                  Text('Fat: ${product.nutriments!.getValue(off.Nutrient.fat, off.PerSize.oneHundredGrams)}g'),
+                if (product.nutriments!.getValue(off.Nutrient.saturatedFat, off.PerSize.oneHundredGrams) != null)
+                  Text('Saturated Fat: ${product.nutriments!.getValue(off.Nutrient.saturatedFat, off.PerSize.oneHundredGrams)}g'),
+                if (product.nutriments!.getValue(off.Nutrient.fiber, off.PerSize.oneHundredGrams) != null)
+                  Text('Fiber: ${product.nutriments!.getValue(off.Nutrient.fiber, off.PerSize.oneHundredGrams)}g'),
+                if (product.nutriments!.getValue(off.Nutrient.sodium, off.PerSize.oneHundredGrams) != null)
+                  Text('Sodium: ${product.nutriments!.getValue(off.Nutrient.sodium, off.PerSize.oneHundredGrams)}g'),
+                const SizedBox(height: 8),
+              ],
+              if (product.ingredientsText != null && product.ingredientsText!.isNotEmpty) ...[
+                const Text('Ingredients:', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(product.ingredientsText!),
+                const SizedBox(height: 8),
+              ],
+              if (product.nutriscore != null) ...[
+                const Text('Nutri-Score:', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(product.nutriscore!.toUpperCase(), 
+                     style: TextStyle(
+                       fontSize: 24, 
+                       fontWeight: FontWeight.bold,
+                       color: _getNutriScoreColor(product.nutriscore!)
+                     )),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _getNutriScoreColor(String grade) {
+    switch (grade.toLowerCase()) {
+      case 'a':
+        return Colors.green;
+      case 'b':
+        return Colors.lightGreen;
+      case 'c':
+        return Colors.yellow[700]!;
+      case 'd':
+        return Colors.orange;
+      case 'e':
+        return Colors.red;
+      default:
+        return Colors.grey;
+    }
   }
 }
 
@@ -324,7 +512,6 @@ class QRScannerOverlayShape extends ShapeBorder {
   @override
   void paint(Canvas canvas, Rect rect, {TextDirection? textDirection}) {
     final width = rect.width;
-    // final borderWidthSize = width / 2;
     final height = rect.height;
     final borderOffset = borderWidth / 2;
     final cutOutWidth = cutOutSize;
