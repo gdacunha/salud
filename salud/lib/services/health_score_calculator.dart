@@ -87,8 +87,33 @@ class HealthScoreCalculator {
   }
 
   // Calculate the Macro Ration Subscore
-  static double _calculateMacroScore(off.Nutriments nutrientFacts, UserPreferences userPrefts) {
+  static double _calculateMacroScore(off.Nutriments nutrientFacts, UserPreferences userPrefs) {
+    // Get the foods macros
+    final carbs = nutrientFacts.getValue(off.Nutrient.carbohydrates, off.PerSize.oneHundredGrams);
+    final protein = nutrientFacts.getValue(off.Nutrient.proteins, off.PerSize.oneHundredGrams);
+    final fats = nutrientFacts.getValue(off.Nutrient.fat, off.PerSize.oneHundredGrams);
 
+    final totalMacros = carbs! + protein! + fats!;
+
+    // If there is not macro data return a neutral score of 0.5
+    if (totalMacros == 0.0) {
+      return 0.5;
+    }
+
+    // Calculate macro percentages
+    final double fc = carbs / totalMacros;      // Percentage of the product that is carbs
+    final double fp = protein / totalMacros;    // Percentage of the product that is protein
+    final double ff = fats / totalMacros;       // Percentage of the product that is fat
+
+    // Calculate the distance (similarity) between the user's preferences and the products macro split
+    final D = (fc - userPrefs.carbGoalPercentage).abs() + 
+              (fp - userPrefs.proteinGoalPercentage).abs() + 
+              (ff - userPrefs.fatsGoalPercentage).abs();
+    
+    // Normalize the distance (similarity) to a score from 0-1 -- the closer the ratios are the higher the score
+    final double sM = 1.0 - (D / 2.0);
+
+    return sM;
   }
 
   // Calculate Ingredient Quality Subscore
