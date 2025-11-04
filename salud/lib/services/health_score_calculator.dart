@@ -47,7 +47,7 @@ class HealthScoreResult {
 
 class HealthScoreCalculator {
   // Constants - these can be tuned
-  static const double kE = 0.01;    // Energy Score constant
+  static const double kE = 0.01;    // Energy Score constant -- by default assume user is losing weight
   static const double kN = 0.05;    // Nutrient Density constant
   static const double kQ = 0.7;     // Ingreidnet quality constant
 
@@ -64,7 +64,26 @@ class HealthScoreCalculator {
 
   // Calculate the Energy Ratio Subscore
   static double _calculateEnergyScore(double calories, UserPreferences userPrefs) {
+    // Calculate Caloric Density
+    double dc = calories / 100.0;
 
+    double adjustedKE = kE;
+
+    // Calculate the weight based on the user's goals
+    if (userPrefs.userWeightGoal == WeightGoal.loseWeight) {
+      // weight gain tweak
+      adjustedKE = adjustedKE * 1.5;      // Note: 1.5 is subject to change and tweaking
+    }
+    else if (userPrefs.userWeightGoal == WeightGoal.maintainWeight) {
+      // maintanence tweak
+      adjustedKE = adjustedKE * 1.25;     // Note: 1.25 is subject to change and tweaking
+    }
+    // Otherwise user is losing weight and leave as default
+
+    // Normalize to a score from 1-0
+    final double scoreEnergy = 1.0 / (1.0 + adjustedKE * dc);
+
+    return scoreEnergy;
   }
 
   // Calculate the Macro Ration Subscore
