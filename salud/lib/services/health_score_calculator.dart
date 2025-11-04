@@ -56,4 +56,29 @@ class HealthScoreCalculator {
   static const double wM = 0.20;    // Macro Ratio Score weight
   static const double wQ = 0.35;    // Ingredient Quality Score weight
   static const double wN = 0.20;    // Nutrient Density Score weight
+
+  // Calculate the Overall Health Score -- this is the one that is displayed to the user
+  static HealthScoreResult calculateHealthScore(off.Product product, UserPreferences userPrefs){
+
+  }
+
+  // Calculate the Energy Ratio Subscore
+  static double _calculateEnergyScore(double calories, UserPreferences userPrefs) {
+
+  }
+
+  // Calculate the Macro Ration Subscore
+  static double _calculateMacroScore(off.Nutriments nutrientFacts, UserPreferences userPrefts) {
+
+  }
+
+  // Calculate Ingredient Quality Subscore
+  static double _calculateIngredientScore(off.Product product) {
+
+  }
+
+  // Calculate the Nutrient Density Subscore
+  static double _calculateNutrientDensityScore(off.Nutriments nutrientFacts, double calories) {
+
+  }
 }
