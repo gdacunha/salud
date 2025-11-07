@@ -118,7 +118,51 @@ class HealthScoreCalculator {
 
   // Calculate Ingredient Quality Subscore
   static double _calculateIngredientScore(off.Product product) {
+    // Get ingredient list from the product
+    final ingredientsText = product.ingredientsText;
 
+    // Check if the food product does not have an ingredients list in the OFF database
+    if (ingredientsText == null || ingredientsText.isEmpty) {
+      return 0.5;       // If no ingredients list return a neutral score
+    }
+
+    // Parse ingredients list string into a list
+    List<String> ingredients = ingredientsText
+                                              .split(',')
+                                              .map((e) => e.trim())
+                                              .where((e) => e.isNotEmpty)
+                                              .toList();
+    // Check if there is an element in the list
+    if (ingredients.isEmpty) {
+      return 0.5;       // If there is no ingredients return and neutral score
+    }
+
+    double weightedRiskSum = 0.0;
+    double weightSum = 0.0;
+
+    for (int i = 0; i < ingredients.length; i++) {
+      // Risk score from 0-10
+      final ri = 5;       // TODO: Pull the risk score from the ingredient risk database (5 is a temporary neutral score for now)
+      
+      // Normal ri score to 0-1
+      final riHat = ri / 10.0;
+
+      // Calculate positional weight (earlier ingredients have higher emphasis)
+      final wi = pow(kQ, i).toDouble();
+
+      weightedRiskSum += wi *riHat;
+      weightSum += wi;
+    }
+
+    if (weightSum == 0) {
+      return 0.5;
+    }
+
+    // Calculate the ingredient quality subscore
+    final sQ = 1.0 - weightedRiskSum / weightSum;
+
+    // Clamp in case score falls outside of 0-1
+    return sQ.clamp(0.0, 1.0);
   }
 
   // Calculate the Nutrient Density Subscore
