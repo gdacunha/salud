@@ -223,4 +223,22 @@ class HealthScoreCalculator {
 
     return sN;
   }
+
+  // Get a color representing the health score
+  static String getScoreColor(double score) {
+    if (score >= 0.8) return 'green';
+    if (score >= 0.6) return 'lightgreen';
+    if (score >= 0.4) return 'yellow';
+    if (score >= 0.2) return 'orange';
+    return 'red';
+  }
+  
+  // Get a text description of the health score
+  static String getScoreDescription(double score) {
+    if (score >= 0.8) return 'Excellent';
+    if (score >= 0.6) return 'Good';
+    if (score >= 0.4) return 'Fair';
+    if (score >= 0.2) return 'Poor';
+    return 'Very Poor';
+  }
 }
