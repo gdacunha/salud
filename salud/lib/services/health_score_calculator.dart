@@ -167,6 +167,60 @@ class HealthScoreCalculator {
 
   // Calculate the Nutrient Density Subscore
   static double _calculateNutrientDensityScore(off.Nutriments nutrientFacts, double calories) {
+    if (calories == 0) {
+      return 0.0;
+    }
 
+    // Weight conversion constants
+    final milligramsConversionConst = 1000.0;
+    final microgramsConversionConst = 1000000.0;
+
+    // Sum weight of all nutrients
+    double totalNutrientMass = 0.0;
+
+    // Amino Acids
+    totalNutrientMass += nutrientFacts.getValue(off.Nutrient.proteins, off.PerSize.oneHundredGrams) ?? 0.0;
+
+    // Fiber
+    totalNutrientMass += nutrientFacts.getValue(off.Nutrient.fiber, off.PerSize.oneHundredGrams) ?? 0.0;
+
+    // Vitamins
+    // TODO: See if niacin/vitamin b3 is tracked by OFF
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminA, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminB1, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminB2, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.pantothenicAcid, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminB6, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminB9, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminB12, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminC, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminD, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminE, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminK, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
+
+    // Minerals
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.calcium, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.copper, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.iodine, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.iron, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.magnesium, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.manganese, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.phosphorus, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.potassium, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.selenium, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.sodium, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.zinc, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
+
+    // Fatty Acids (already in grams)
+    totalNutrientMass += nutrientFacts.getValue(off.Nutrient.omega3, off.PerSize.oneHundredGrams) ?? 0.0;
+    totalNutrientMass += nutrientFacts.getValue(off.Nutrient.omega6, off.PerSize.oneHundredGrams) ?? 0.0;
+
+    // Calculate nutrient density
+    final dn = totalNutrientMass / 100.0;
+
+    // Calculate nutrient density score
+    final sN = 1.0 / (1.0 + kN / dn);
+
+    return sN;
   }
 }
