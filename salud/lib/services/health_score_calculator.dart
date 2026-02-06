@@ -59,7 +59,40 @@ class HealthScoreCalculator {
 
   // Calculate the Overall Health Score -- this is the one that is displayed to the user
   static HealthScoreResult calculateHealthScore(off.Product product, UserPreferences userPrefs){
-
+    // Extract nutrient data
+    final nutrients = product.nutriments;
+    if (nutrients == null) {
+      // Return neutral score if no nutrient data
+      return HealthScoreResult(
+        overallScore: 0.5,
+        energyScore: 0.5,
+        macroScore: 0.5,
+        ingredientScore: 0.5,
+        nutritionScore: 0.5,
+      );
+    }
+    // Get calories per 100g
+    final calories = nutrients.getValue(off.Nutrient.energyKCal, off.PerSize.oneHundredGrams) ?? 0.0;
+    
+    // Calculate sub-scores
+    final energyScore = _calculateEnergyScore(calories, userPrefs);
+    final macroScore = _calculateMacroScore(nutrients, userPrefs);
+    final ingredientScore = _calculateIngredientScore(product);
+    final nutrientScore = _calculateNutrientDensityScore(nutrients, calories);
+    
+    // Calculate overall score
+    final overallScore = pow(energyScore, wE) * 
+                        pow(macroScore, wM) * 
+                        pow(ingredientScore, wQ) * 
+                        pow(nutrientScore, wN);
+    
+    return HealthScoreResult(
+      overallScore: overallScore.toDouble(),
+      energyScore: energyScore,
+      macroScore: macroScore,
+      ingredientScore: ingredientScore,
+      nutritionScore: nutrientScore,
+    );
   }
 
   // Calculate the Energy Ratio Subscore
