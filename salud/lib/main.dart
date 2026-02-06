@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:openfoodfacts/openfoodfacts.dart' as off;
 import 'services/openfoodfacts_service.dart';
+import 'services/health_score_calculator.dart';
 
 void main() {
   // Initialize the OpenFoodFacts API configuration
@@ -39,6 +40,14 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   List<off.Product> scannedProducts = [];
   bool _isLoading = false;
+
+  // Placeholder user preferences for health score calculation
+  final UserPreferences userPrefs = UserPreferences(
+    carbGoalPercentage: 0.50,
+    proteinGoalPercentage: 0.25,
+    fatsGoalPercentage: 0.25,
+    userWeightGoal: WeightGoal.gainWeight,
+  );
 
   void _addScannedProduct(off.Product product) {
     setState(() {
@@ -167,6 +176,9 @@ class _MyHomePageState extends State<MyHomePage> {
                       itemCount: scannedProducts.length,
                       itemBuilder: (context, index) {
                         final product = scannedProducts[index];
+
+                        final healthScore = HealthScoreCalculator.calculateHealthScore(product, userPrefs);
+
                         return Card(
                           child: ListTile(
                             leading: product.imageFrontSmallUrl != null || product.imageFrontUrl != null
@@ -192,13 +204,36 @@ class _MyHomePageState extends State<MyHomePage> {
                               children: [
                                 if (product.brands != null && product.brands!.isNotEmpty)
                                   Text(product.brands!),
-                                Text(
-                                  'Barcode: ${product.barcode}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontFamily: 'monospace',
-                                    color: Colors.grey,
-                                  ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    const Text('Health Score: ',
+                                        style: TextStyle(fontWeight: FontWeight.bold)),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: _getScoreColorFromValue(healthScore.overallScore),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text(
+                                        '${(healthScore.overallScore * 100).toInt()}/100',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      HealthScoreCalculator.getScoreDescription(healthScore.overallScore),
+                                      style: TextStyle(
+                                        color: _getScoreColorFromValue(healthScore.overallScore),
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
@@ -247,6 +282,12 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _showProductDetails(BuildContext context, off.Product product) {
+  // Calculate health score for detail view
+    final healthScore = HealthScoreCalculator.calculateHealthScore(
+      product,
+      userPrefs,
+    );
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -267,6 +308,69 @@ class _MyHomePageState extends State<MyHomePage> {
                   ),
                 ),
               const SizedBox(height: 16),
+
+              // Health Score Section
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _getScoreColorFromValue(healthScore.overallScore).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: _getScoreColorFromValue(healthScore.overallScore),
+                    width: 2,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Salud Health Score',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: _getScoreColorFromValue(healthScore.overallScore),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Text(
+                            '${(healthScore.overallScore * 100).toInt()}/100',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      HealthScoreCalculator.getScoreDescription(healthScore.overallScore),
+                      style: TextStyle(
+                        color: _getScoreColorFromValue(healthScore.overallScore),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const Divider(height: 16),
+                    const Text('Score Breakdown:', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    _buildScoreBar('Energy', healthScore.energyScore),
+                    _buildScoreBar('Macros', healthScore.macroScore),
+                    _buildScoreBar('Ingredients', healthScore.ingredientScore),
+                    _buildScoreBar('Nutrients', healthScore.nutritionScore),
+                  ],
+                ),
+              ),
+              
+              const SizedBox(height: 16),
+
               if (product.brands != null && product.brands!.isNotEmpty) ...[
                 const Text('Brand:', style: TextStyle(fontWeight: FontWeight.bold)),
                 Text(product.brands!),
@@ -321,6 +425,62 @@ class _MyHomePageState extends State<MyHomePage> {
         ],
       ),
     );
+  }
+
+  Widget _buildScoreBar(String label, double score) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8.0),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 80,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+          Expanded(
+            child: Stack(
+              children: [
+                Container(
+                  height: 20,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                FractionallySizedBox(
+                  widthFactor: score,
+                  child: Container(
+                    height: 20,
+                    decoration: BoxDecoration(
+                      color: _getScoreColorFromValue(score),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 30,
+            child: Text(
+              '${(score * 100).toInt()}',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Color _getScoreColorFromValue(double score) {
+    if (score >= 0.8) return Colors.green;
+    if (score >= 0.6) return Colors.lightGreen;
+    if (score >= 0.4) return Colors.yellow[700]!;
+    if (score >= 0.2) return Colors.orange;
+    return Colors.red;
   }
 
   Color _getNutriScoreColor(String grade) {
