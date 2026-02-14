@@ -6,6 +6,9 @@ import 'services/openfoodfacts_service.dart';
 import 'services/health_score_calculator.dart';
 
 void main() {
+  // Ensure Flutter is initialized
+  WidgetsFlutterBinding.ensureInitialized();
+
   // Initialize the OpenFoodFacts API configuration
   OpenFoodFactsService.initialize();
   
@@ -70,12 +73,22 @@ class _MyHomePageState extends State<MyHomePage> {
       _isLoading = true;
     });
 
+    // Debug: Print barcode to console
+    print('DEBUG: Scanned barcode: $barcode');
+
     try {
       final product = await OpenFoodFactsService.getProductByBarcode(barcode);
       
       if (product != null) {
         _addScannedProduct(product);
+
+        // Debug: Print success
+        print('DEBUG: Product found - ${product.productName}');
+
       } else {
+        // Debug: Print not found
+        print('DEBUG: Product not found for barcode: $barcode');
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -86,6 +99,9 @@ class _MyHomePageState extends State<MyHomePage> {
         }
       }
     } catch (e) {
+      // Debug: Print error
+      print('DEBUG: Error fetching product for barcode $barcode: $e');
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
