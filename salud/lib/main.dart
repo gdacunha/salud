@@ -23,7 +23,7 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color.fromRGBO(101, 215, 190, 1)),
         useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Salude Barcode Scanner Demo'),
+      home: const MyHomePage(title: 'Salud Barcode Scanner Demo'),
     );
   }
 }
