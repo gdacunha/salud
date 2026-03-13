@@ -248,6 +248,8 @@ class HealthScoreCalculator {
     totalNutrientMass += nutrientFacts.getValue(off.Nutrient.omega3, off.PerSize.oneHundredGrams) ?? 0.0;
     totalNutrientMass += nutrientFacts.getValue(off.Nutrient.omega6, off.PerSize.oneHundredGrams) ?? 0.0;
 
+    print("Debug: totalNutrientMass = $totalNutrientMass");
+
     // Calculate nutrient density
     final dn = totalNutrientMass / 100.0;
 
