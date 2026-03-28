@@ -17,11 +17,27 @@ class UserPreferences {
   // Weight Goal
   final WeightGoal userWeightGoal;
 
+  // Macro ratio weights for shortage and surplus
+  final double carbShortageWeight;
+  final double proteinShortageWeight;
+  final double fatShortageWeight;
+  final double carbSurplusWeight;
+  final double proteinSurplusWeight;
+  final double fatSurplusWeight;
+
   UserPreferences({
     this.carbGoalPercentage = 0.5,
     this.proteinGoalPercentage = 0.25,
     this.fatsGoalPercentage = 0.25,
     this.userWeightGoal = WeightGoal.maintainWeight,
+
+    // Default weights - can be tuned
+    this.carbShortageWeight = 1.0,
+    this.proteinShortageWeight = 1.5,  // Penalize protein shortage more
+    this.fatShortageWeight = 1.0,
+    this.carbSurplusWeight = 0.8,
+    this.proteinSurplusWeight = 0.5,   // Less penalty for extra protein
+    this.fatSurplusWeight = 1.2,       // Higher penalty for extra fat
   }) {
     if ((carbGoalPercentage + proteinGoalPercentage + fatsGoalPercentage) != 1.0) {
       throw ArgumentError("Error: Macro goal must sum to 1.0");
@@ -48,8 +64,10 @@ class HealthScoreResult {
 class HealthScoreCalculator {
   // Constants - these can be tuned
   static const double kE = 0.01;    // Energy Score constant -- by default assume user is losing weight
-  static const double kN = 0.05;    // Nutrient Density constant
   static const double kQ = 0.7;     // Ingreidnet quality constant
+
+  // Macro ratio constants
+  static const double alpha = 2.0; // Shortage exponent (controls nonlinearity)
 
   // Weights - these can be tuned
   static const double wE = 0.25;    // Energy Ratio Score weight
@@ -91,7 +109,7 @@ class HealthScoreCalculator {
       energyScore: energyScore,
       macroScore: macroScore,
       ingredientScore: ingredientScore,
-      nutritionScore: nutrientScore,
+      nutritionScore: nutrientScore / 100.0,
     );
   }
 
@@ -138,15 +156,38 @@ class HealthScoreCalculator {
     final double fp = protein / totalMacros;    // Percentage of the product that is protein
     final double ff = fats / totalMacros;       // Percentage of the product that is fat
 
-    // Calculate the distance (similarity) between the user's preferences and the products macro split
-    final D = (fc - userPrefs.carbGoalPercentage).abs() + 
-              (fp - userPrefs.proteinGoalPercentage).abs() + 
-              (ff - userPrefs.fatsGoalPercentage).abs();
+    // Calculate weighted distance D
+    double D = 0.0;
     
-    // Normalize the distance (similarity) to a score from 0-1 -- the closer the ratios are the higher the score
-    final double sM = 1.0 - (D / 2.0);
-
-    return sM;
+    // Carbs
+    final carbShortage = max(0.0, userPrefs.carbGoalPercentage - fc);
+    final carbSurplus = max(0.0, fc - userPrefs.carbGoalPercentage);
+    D += userPrefs.carbShortageWeight * pow(carbShortage, alpha) + 
+         userPrefs.carbSurplusWeight * carbSurplus;
+    
+    // Protein
+    final proteinShortage = max(0.0, userPrefs.proteinGoalPercentage - fp);
+    final proteinSurplus = max(0.0, fp - userPrefs.proteinGoalPercentage);
+    D += userPrefs.proteinShortageWeight * pow(proteinShortage, alpha) + 
+         userPrefs.proteinSurplusWeight * proteinSurplus;
+    
+    // Fat
+    final fatShortage = max(0.0, userPrefs.fatsGoalPercentage - ff);
+    final fatSurplus = max(0.0, ff - userPrefs.fatsGoalPercentage);
+    D += userPrefs.fatShortageWeight * pow(fatShortage, alpha) + 
+         userPrefs.fatSurplusWeight * fatSurplus;
+    
+    // Calculate maximum possible distance (worst case scenario)
+    // Worst case: all macros in one category (e.g., 100% carbs, 0% protein, 0% fat)
+    final Dmax = userPrefs.carbShortageWeight * pow(userPrefs.carbGoalPercentage, alpha) + 
+                 userPrefs.carbSurplusWeight * (1.0 - userPrefs.carbGoalPercentage) +
+                 userPrefs.proteinShortageWeight * pow(userPrefs.proteinGoalPercentage, alpha) +
+                 userPrefs.fatShortageWeight * pow(userPrefs.fatsGoalPercentage, alpha);
+    
+    // Macro score (normalized)
+    final sM = 1.0 - (D / Dmax);
+    
+    return sM.clamp(0.0, 1.0);
   }
 
   // Calculate Ingredient Quality Subscore
@@ -200,62 +241,70 @@ class HealthScoreCalculator {
 
   // Calculate the Nutrient Density Subscore
   static double _calculateNutrientDensityScore(off.Nutriments nutrientFacts, double calories) {
-    if (calories == 0) {
-      return 0.0;
+    // Daily Values (DV) - based on FDA recommendations for adults
+    final Map<off.Nutrient, double> dailyValues = {
+      // Macronutrients
+      off.Nutrient.proteins: 50.0,        // g
+      off.Nutrient.fiber: 28.0,           // g
+      
+      // Vitamins (in same units as OFF API returns)
+      off.Nutrient.vitaminA: 900.0,       // µg
+      off.Nutrient.vitaminB1: 1.2,        // mg
+      off.Nutrient.vitaminB2: 1.3,        // mg
+      off.Nutrient.pantothenicAcid: 16.0,       // mg (niacin)
+      off.Nutrient.vitaminB6: 1.7,        // mg
+      off.Nutrient.vitaminB9: 400.0,      // µg (folate)
+      off.Nutrient.vitaminB12: 2.4,       // µg
+      off.Nutrient.vitaminC: 90.0,        // mg
+      off.Nutrient.vitaminD: 20.0,        // µg
+      off.Nutrient.vitaminE: 15.0,        // mg
+      off.Nutrient.vitaminK: 120.0,       // µg
+      
+      // Minerals
+      off.Nutrient.calcium: 1300.0,       // mg
+      off.Nutrient.iron: 18.0,            // mg
+      off.Nutrient.magnesium: 420.0,      // mg
+      off.Nutrient.phosphorus: 1250.0,    // mg
+      off.Nutrient.potassium: 4700.0,     // mg
+      off.Nutrient.zinc: 11.0,            // mg
+      off.Nutrient.copper: 0.9,           // mg
+      off.Nutrient.manganese: 2.3,        // mg
+      off.Nutrient.selenium: 55.0,        // µg
+    };
+    
+    double sumCappedContributions = 0.0;
+    int nutrientsAboveThreshold = 0;
+    int totalNutrients = dailyValues.length;
+    
+    for (var entry in dailyValues.entries) {
+      final nutrient = entry.key;
+      final dv = entry.value;
+      
+      // Get nutrient amount per 100g
+      final amount = nutrientFacts.getValue(nutrient, off.PerSize.oneHundredGrams) ?? 0.0;
+      
+      // Calculate ratio (percent of daily value)
+      final ratio = amount / dv;
+      
+      // Cap contribution at 100% DV to prevent dominance
+      final cappedContribution = min(ratio, 1.0);
+      sumCappedContributions += cappedContribution;
+      
+      // Count nutrients that exceed 5% DV threshold
+      if (ratio > 0.05) {
+        nutrientsAboveThreshold++;
+      }
     }
-
-    // Weight conversion constants
-    final milligramsConversionConst = 1000.0;
-    final microgramsConversionConst = 1000000.0;
-
-    // Sum weight of all nutrients
-    double totalNutrientMass = 0.0;
-
-    // Amino Acids
-    totalNutrientMass += nutrientFacts.getValue(off.Nutrient.proteins, off.PerSize.oneHundredGrams) ?? 0.0;
-
-    // Fiber
-    totalNutrientMass += nutrientFacts.getValue(off.Nutrient.fiber, off.PerSize.oneHundredGrams) ?? 0.0;
-
-    // Vitamins
-    // TODO: See if niacin/vitamin b3 is tracked by OFF
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminA, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminB1, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminB2, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.pantothenicAcid, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminB6, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminB9, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminB12, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminC, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminD, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminE, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.vitaminK, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
-
-    // Minerals
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.calcium, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.copper, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.iodine, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.iron, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.magnesium, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.manganese, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.phosphorus, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.potassium, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.selenium, off.PerSize.oneHundredGrams) ?? 0.0) / microgramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.sodium, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-    totalNutrientMass += (nutrientFacts.getValue(off.Nutrient.zinc, off.PerSize.oneHundredGrams) ?? 0.0) / milligramsConversionConst;
-
-    // Fatty Acids (already in grams)
-    totalNutrientMass += nutrientFacts.getValue(off.Nutrient.omega3, off.PerSize.oneHundredGrams) ?? 0.0;
-    totalNutrientMass += nutrientFacts.getValue(off.Nutrient.omega6, off.PerSize.oneHundredGrams) ?? 0.0;
-
-    print("Debug: totalNutrientMass = $totalNutrientMass");
-
-    // Calculate nutrient density
-    final dn = totalNutrientMass / 100.0;
-
-    // Calculate nutrient density score
-    final sN = 1.0 / (1.0 + kN / dn);
-
+    
+    // Density component: average contribution per nutrient
+    final densityComponent = sumCappedContributions / totalNutrients;
+    
+    // Variety component: fraction of nutrients that meaningfully contribute
+    final varietyComponent = nutrientsAboveThreshold / totalNutrients;
+    
+    // Final nutrient score (0-100 scale)
+    final sN = 100.0 * densityComponent * varietyComponent;
+    
     return sN;
   }
 
