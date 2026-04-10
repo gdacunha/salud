@@ -63,7 +63,7 @@ class HealthScoreResult {
 
 class HealthScoreCalculator {
   // Constants - these can be tuned
-  static const double kE = 0.01;    // Energy Score constant -- by default assume user is losing weight
+  static const double kE = 0.3;    // Energy Score constant -- by default assume user is losing weight
   static const double kQ = 0.7;     // Ingreidnet quality constant
 
   // Macro ratio constants
@@ -241,6 +241,8 @@ class HealthScoreCalculator {
 
   // Calculate the Nutrient Density Subscore
   static double _calculateNutrientDensityScore(off.Nutriments nutrientFacts, double calories) {
+    print('\n=== DEBUG: Nutrient Density Score Calculation ===');
+
     // Daily Values (DV) - based on FDA recommendations for adults
     final Map<off.Nutrient, double> dailyValues = {
       // Macronutrients
@@ -275,6 +277,8 @@ class HealthScoreCalculator {
     double sumCappedContributions = 0.0;
     int nutrientsAboveThreshold = 0;
     int totalNutrients = dailyValues.length;
+
+    print('Total nutrients being evaluated: $totalNutrients');
     
     for (var entry in dailyValues.entries) {
       final nutrient = entry.key;
@@ -294,16 +298,27 @@ class HealthScoreCalculator {
       if (ratio > 0.05) {
         nutrientsAboveThreshold++;
       }
+
+      if (amount > 0) {
+        print('  ${nutrient.offTag}: amount=$amount, DV=$dv, ratio=${(ratio * 100).toStringAsFixed(2)}%, capped=${(cappedContribution * 100).toStringAsFixed(2)}%');
+      }
     }
+
+    print('Sum of capped contributions: $sumCappedContributions');
+    print('Nutrients above 5% threshold: $nutrientsAboveThreshold');
     
     // Density component: average contribution per nutrient
     final densityComponent = sumCappedContributions / totalNutrients;
+    print('Density component: $densityComponent (sum=$sumCappedContributions / total=$totalNutrients)');
     
     // Variety component: fraction of nutrients that meaningfully contribute
     final varietyComponent = nutrientsAboveThreshold / totalNutrients;
+    print('Variety component: $varietyComponent (above threshold=$nutrientsAboveThreshold / total=$totalNutrients)');
     
     // Final nutrient score (0-100 scale)
     final sN = 100.0 * densityComponent * varietyComponent;
+    print('Final nutrient score (sN): $sN (100 * $densityComponent * $varietyComponent)');
+    print('=== END DEBUG ===\n');
     
     return sN;
   }
