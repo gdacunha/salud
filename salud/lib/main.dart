@@ -4,8 +4,10 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:openfoodfacts/openfoodfacts.dart' as off;
 import 'services/openfoodfacts_service.dart';
 import 'services/health_score_calculator.dart';
+import 'services/database_helper.dart';
+import 'dart:convert';
 
-void main() {
+void main() async {
   // Ensure Flutter is initialized
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -43,6 +45,9 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   List<off.Product> scannedProducts = [];
   bool _isLoading = false;
+  int _totalScans = 0;
+  int _uniqueProducts = 0;
+  final DatabaseHelper _dbHelper = DatabaseHelper();
 
   // Placeholder user preferences for health score calculation
   final UserPreferences userPrefs = UserPreferences(
@@ -52,20 +57,79 @@ class _MyHomePageState extends State<MyHomePage> {
     userWeightGoal: WeightGoal.gainWeight,
   );
 
-  void _addScannedProduct(off.Product product) {
+  @override
+  void initState() {
+    super.initState();
+    _loadScannedProducts();
+  }
+  
+  Future<void> _loadScannedProducts() async {
+    final scans = await _dbHelper.getAllScans();
+    final totalScans = await _dbHelper.getTotalScans();
+    final uniqueProducts = await _dbHelper.getUniqueProductCount();
+    
     setState(() {
-      // Check if product already exists by barcode
-      bool exists = scannedProducts.any((p) => p.barcode == product.barcode);
-      if (!exists) {
-        scannedProducts.insert(0, product);
-      }
+      scannedProducts = scans;
+      _totalScans = totalScans;
+      _uniqueProducts = uniqueProducts;
     });
+    
+    print('Loaded ${scans.length} scans from database');
   }
 
-  void _clearHistory() {
-    setState(() {
-      scannedProducts.clear();
+  void _addScannedProduct(off.Product product, double healthScore) async {
+    // Convert nutrients to JSON
+    final nutrientsJson = json.encode({
+      'energyKCal': product.nutriments?.getValue(off.Nutrient.energyKCal, off.PerSize.oneHundredGrams),
+      'proteins': product.nutriments?.getValue(off.Nutrient.proteins, off.PerSize.oneHundredGrams),
+      'carbohydrates': product.nutriments?.getValue(off.Nutrient.carbohydrates, off.PerSize.oneHundredGrams),
+      'fat': product.nutriments?.getValue(off.Nutrient.fat, off.PerSize.oneHundredGrams),
+      'fiber': product.nutriments?.getValue(off.Nutrient.fiber, off.PerSize.oneHundredGrams),
     });
+    
+    final record = ScannedProductRecord(
+      barcode: product.barcode ?? 'unknown',
+      productName: product.productName ?? 'Unknown Product',
+      brand: product.brands,
+      imageUrl: product.imageFrontSmallUrl ?? product.imageFrontUrl,
+      nutrientsJson: nutrientsJson,
+      ingredientsText: product.ingredientsText,
+      healthScore: healthScore,
+      scannedAt: DateTime.now(),
+    );
+    await _dbHelper.insertScan(record);
+    await _loadScannedProducts();
+  }
+
+  void _clearHistory() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear History'),
+        content: const Text('Are you sure you want to delete all scan history?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Clear', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirm == true) {
+      await _dbHelper.clearAllScans();
+      await _loadScannedProducts();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Scan history cleared')),
+        );
+      }
+    }
   }
 
   Future<void> _handleScannedBarcode(String barcode) async {
@@ -80,20 +144,32 @@ class _MyHomePageState extends State<MyHomePage> {
       final product = await OpenFoodFactsService.getProductByBarcode(barcode);
       
       if (product != null) {
-        _addScannedProduct(product);
-
+        // Calculate health score
+        final healthScore = HealthScoreCalculator.calculateHealthScore(
+          product,
+          userPrefs,
+        );
+        
+        _addScannedProduct(product, healthScore.overallScore);
         // Debug: Print success
         print('DEBUG: Product found - ${product.productName}');
-
-      } else {
+      }
+      else {
         // Debug: Print not found
         print('DEBUG: Product not found for barcode: $barcode');
-
+        
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('Product not found for barcode: $barcode'),
-              duration: const Duration(seconds: 2),
+              duration: const Duration(seconds: 3),
+              action: SnackBarAction(
+                label: 'Copy',
+                onPressed: () {
+                  // You could add clipboard functionality here if needed
+                  print('DEBUG: User wants to copy barcode: $barcode');
+                },
+              ),
             ),
           );
         }
@@ -182,8 +258,50 @@ class _MyHomePageState extends State<MyHomePage> {
                 const SizedBox(height: 30),
                 if (scannedProducts.isNotEmpty) ...[
                   const Divider(),
+                  // Statistics Card
+                  Card(
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          Column(
+                            children: [
+                              Text(
+                                '$_totalScans',
+                                style: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const Text('Total Scans'),
+                            ],
+                          ),
+                          Container(
+                            width: 1,
+                            height: 40,
+                            color: Colors.grey,
+                          ),
+                          Column(
+                            children: [
+                              Text(
+                                '$_uniqueProducts',
+                                style: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const Text('Unique Items'),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
                   const Text(
-                    'Scanned Products:',
+                    'Scan History:',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 10),
@@ -191,17 +309,15 @@ class _MyHomePageState extends State<MyHomePage> {
                     child: ListView.builder(
                       itemCount: scannedProducts.length,
                       itemBuilder: (context, index) {
-                        final product = scannedProducts[index];
-
-                        final healthScore = HealthScoreCalculator.calculateHealthScore(product, userPrefs);
-
+                        final record = scannedProducts[index];
+                        
                         return Card(
                           child: ListTile(
-                            leading: product.imageFrontSmallUrl != null || product.imageFrontUrl != null
+                            leading: record.imageUrl != null
                                 ? ClipRRect(
                                     borderRadius: BorderRadius.circular(8),
                                     child: Image.network(
-                                      product.imageFrontSmallUrl ?? product.imageFrontUrl!,
+                                      record.imageUrl!,
                                       width: 50,
                                       height: 50,
                                       fit: BoxFit.cover,
@@ -212,14 +328,22 @@ class _MyHomePageState extends State<MyHomePage> {
                                   )
                                 : const Icon(Icons.food_bank, size: 50),
                             title: Text(
-                              product.productName ?? 'Unknown Product',
+                              record.productName,
                               style: const TextStyle(fontWeight: FontWeight.bold),
                             ),
                             subtitle: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                if (product.brands != null && product.brands!.isNotEmpty)
-                                  Text(product.brands!),
+                                if (record.brand != null && record.brand!.isNotEmpty)
+                                  Text(record.brand!),
+                                const SizedBox(height: 4),
+                                Text(
+                                  _formatTimestamp(record.scannedAt),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.grey,
+                                  ),
+                                ),
                                 const SizedBox(height: 4),
                                 Row(
                                   children: [
@@ -228,11 +352,11 @@ class _MyHomePageState extends State<MyHomePage> {
                                     Container(
                                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                       decoration: BoxDecoration(
-                                        color: _getScoreColorFromValue(healthScore.overallScore),
+                                        color: _getScoreColorFromValue(record.healthScore),
                                         borderRadius: BorderRadius.circular(12),
                                       ),
                                       child: Text(
-                                        '${(healthScore.overallScore * 100).toInt()}/100',
+                                        '${(record.healthScore * 100).toInt()}/100',
                                         style: const TextStyle(
                                           color: Colors.white,
                                           fontWeight: FontWeight.bold,
@@ -242,9 +366,9 @@ class _MyHomePageState extends State<MyHomePage> {
                                     ),
                                     const SizedBox(width: 8),
                                     Text(
-                                      HealthScoreCalculator.getScoreDescription(healthScore.overallScore),
+                                      HealthScoreCalculator.getScoreDescription(record.healthScore),
                                       style: TextStyle(
-                                        color: _getScoreColorFromValue(healthScore.overallScore),
+                                        color: _getScoreColorFromValue(record.healthScore),
                                         fontWeight: FontWeight.bold,
                                         fontSize: 12,
                                       ),
@@ -254,9 +378,10 @@ class _MyHomePageState extends State<MyHomePage> {
                               ],
                             ),
                             trailing: IconButton(
-                              icon: const Icon(Icons.info_outline),
-                              onPressed: () {
-                                _showProductDetails(context, product);
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: () async {
+                                await _dbHelper.deleteScan(record.id!);
+                                await _loadScannedProducts();
                               },
                             ),
                           ),
