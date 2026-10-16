@@ -1,6 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'dart:convert';
+import 'package:openfoodfacts/openfoodfacts.dart' as off;
 
 /// Model for a scanned product record
 class ScannedProductRecord {
@@ -52,6 +53,43 @@ class ScannedProductRecord {
       healthScore: map['health_score'] as double,
       scannedAt: DateTime.parse(map['scanned_at'] as String),
     );
+  }
+  
+  /// Create a ScannedProductRecord from an OpenFoodFacts Product
+  factory ScannedProductRecord.fromProduct(
+    off.Product product,
+    double healthScore,
+  ) {
+    // Convert nutrients to JSON
+    final nutrientsJson = json.encode({
+      'energyKCal': product.nutriments?.getValue(off.Nutrient.energyKCal, off.PerSize.oneHundredGrams),
+      'proteins': product.nutriments?.getValue(off.Nutrient.proteins, off.PerSize.oneHundredGrams),
+      'carbohydrates': product.nutriments?.getValue(off.Nutrient.carbohydrates, off.PerSize.oneHundredGrams),
+      'fat': product.nutriments?.getValue(off.Nutrient.fat, off.PerSize.oneHundredGrams),
+      'fiber': product.nutriments?.getValue(off.Nutrient.fiber, off.PerSize.oneHundredGrams),
+      'sugars': product.nutriments?.getValue(off.Nutrient.sugars, off.PerSize.oneHundredGrams),
+      'sodium': product.nutriments?.getValue(off.Nutrient.sodium, off.PerSize.oneHundredGrams),
+    });
+    
+    return ScannedProductRecord(
+      barcode: product.barcode ?? 'unknown',
+      productName: product.productName ?? 'Unknown Product',
+      brand: product.brands,
+      imageUrl: product.imageFrontSmallUrl ?? product.imageFrontUrl,
+      nutrientsJson: nutrientsJson,
+      ingredientsText: product.ingredientsText,
+      healthScore: healthScore,
+      scannedAt: DateTime.now(),
+    );
+  }
+  
+  /// Get nutrients as a map
+  Map<String, dynamic> getNutrients() {
+    try {
+      return json.decode(nutrientsJson) as Map<String, dynamic>;
+    } catch (e) {
+      return {};
+    }
   }
 }
 
