@@ -1,28 +1,51 @@
 import 'dart:math';
 import 'package:openfoodfacts/openfoodfacts.dart' as off;
 
-enum WeightGoal {
-    loseWeight,
-    gainWeight,
-    maintainWeight,
-  }
+// Salud Health Score v2.0 beta
+//
+//   Score = clip(B + Δ, 0, 100)
+//   B     = 0.7·N + 0.3·((F + S) / 2)
+//   N = Nutrient Balance, F = Food Ingredient, S = Processing,
+//   Δ = capped goal adjustment (the only place the user's goal enters).
+//
+// The public API (HealthScoreResult fields, getScoreColor, getScoreDescription)
+// still uses a 0–1 scale so existing callers keep working. The 0–100 values
+// are available through the new `score`, `baseScore`, `band`, etc. fields.
 
-// Contains user preferences and metrics necessary for health score calulation weighting
+enum WeightGoal {
+  loseWeight,
+  gainWeight,
+  maintainWeight,
+}
+
+/// Which "how much this goal cares" row from section 3.7.2 applies.
+enum _Goal { generalHealth, loseWeight, gainWeight }
+
+enum DietStatus { yes, no, unknown }
+
+// Kept so existing settings UI / constructors still compile. Only
+// [userWeightGoal] affects the new algorithm; the macro fields are ignored.
 class UserPreferences {
-  // Macro Ratio
+  @Deprecated('Unused by Salud Health Score v2')
   final double carbGoalPercentage;
+  @Deprecated('Unused by Salud Health Score v2')
   final double proteinGoalPercentage;
+  @Deprecated('Unused by Salud Health Score v2')
   final double fatsGoalPercentage;
 
-  // Weight Goal
   final WeightGoal userWeightGoal;
 
-  // Macro ratio weights for shortage and surplus
+  @Deprecated('Unused by Salud Health Score v2')
   final double carbShortageWeight;
+  @Deprecated('Unused by Salud Health Score v2')
   final double proteinShortageWeight;
+  @Deprecated('Unused by Salud Health Score v2')
   final double fatShortageWeight;
+  @Deprecated('Unused by Salud Health Score v2')
   final double carbSurplusWeight;
+  @Deprecated('Unused by Salud Health Score v2')
   final double proteinSurplusWeight;
+  @Deprecated('Unused by Salud Health Score v2')
   final double fatSurplusWeight;
 
   UserPreferences({
@@ -30,300 +53,524 @@ class UserPreferences {
     this.proteinGoalPercentage = 0.25,
     this.fatsGoalPercentage = 0.25,
     this.userWeightGoal = WeightGoal.maintainWeight,
-
-    // Default weights - can be tuned
     this.carbShortageWeight = 1.0,
-    this.proteinShortageWeight = 1.5,  // Penalize protein shortage more
+    this.proteinShortageWeight = 1.5,
     this.fatShortageWeight = 1.0,
     this.carbSurplusWeight = 0.8,
-    this.proteinSurplusWeight = 0.5,   // Less penalty for extra protein
-    this.fatSurplusWeight = 1.2,       // Higher penalty for extra fat
-  }) {
-    if ((carbGoalPercentage + proteinGoalPercentage + fatsGoalPercentage) != 1.0) {
-      throw ArgumentError("Error: Macro goal must sum to 1.0");
-    }
-  }
+    this.proteinSurplusWeight = 0.5,
+    this.fatSurplusWeight = 1.2,
+  });
 }
 
 class HealthScoreResult {
+  // ---- Legacy fields (all 0–1) ----
+  /// Final score / 100.
   final double overallScore;
+
+  /// Goal fit: 0.5 = no adjustment, >0.5 = goal boosted the score,
+  /// <0.5 = goal lowered it. Derived from Δ (range ±12).
   final double energyScore;
+
+  /// Processing Score S / 100 (the old macro score no longer exists).
   final double macroScore;
+
+  /// Food Ingredient Score F / 100.
   final double ingredientScore;
+
+  /// Nutrient Balance Score N / 100.
   final double nutritionScore;
+
+  // ---- New fields ----
+  /// Final score, 0–100.
+  final double score;
+
+  /// Base Quality Score B (same for every user), 0–100.
+  final double baseScore;
+
+  /// Goal adjustment Δ, in score points (about −12 to +12).
+  final double goalAdjustment;
+
+  /// Poor / Fair / Good / Excellent.
+  final String band;
+
+  /// True if any input was missing or guessed, so the UI should show "estimate".
+  final bool isEstimate;
+
+  /// Human-readable notes on what was missing or assumed.
+  final List<String> estimateNotes;
+
+  /// Allergen ids from the label (e.g. "en:milk"). Never affects the score.
+  final List<String> allergens;
+
+  /// Diet compatibility flags. Never affects the score.
+  final Map<String, DietStatus> dietFlags;
 
   HealthScoreResult({
     required this.overallScore,
     required this.energyScore,
     required this.macroScore,
     required this.ingredientScore,
-    required this.nutritionScore
+    required this.nutritionScore,
+    this.score = 0,
+    this.baseScore = 0,
+    this.goalAdjustment = 0,
+    this.band = 'Fair',
+    this.isEstimate = false,
+    this.estimateNotes = const [],
+    this.allergens = const [],
+    this.dietFlags = const {},
   });
 }
 
 class HealthScoreCalculator {
-  // Constants - these can be tuned
-  static const double kE = 0.3;    // Energy Score constant -- by default assume user is losing weight
-  static const double kQ = 0.7;     // Ingreidnet quality constant
+  // ---------------------------------------------------------------------------
+  // Reference data (tunable)
+  // ---------------------------------------------------------------------------
 
-  // Macro ratio constants
-  static const double alpha = 2.0; // Shortage exponent (controls nonlinearity)
+  // Appendix A – Neutral (0). Checked first.
+  static const List<String> _neutralKeywords = [
+    'water', 'salt', 'yeast', 'spice', 'pepper', 'paprika', 'cinnamon',
+    'garlic powder', 'onion powder', 'vinegar', 'baking soda',
+    'sodium bicarbonate', 'natural flavor', 'natural flavour',
+    'citric acid', 'lecithin', 'xanthan', 'guar gum', 'pectin',
+  ];
 
-  // Weights - these can be tuned
-  static const double wE = 0.25;    // Energy Ratio Score weight
-  static const double wM = 0.20;    // Macro Ratio Score weight
-  static const double wQ = 0.35;    // Ingredient Quality Score weight
-  static const double wN = 0.20;    // Nutrient Density Score weight
+  // Appendix A – Refined / processed (−1).
+  static const List<String> _refinedKeywords = [
+    'sugar', 'syrup', 'dextrose', 'glucose', 'fructose', 'sucrose',
+    'maltodextrin', 'enriched', 'bleached', 'white flour', 'wheat flour',
+    'flour', 'starch', 'hydrogenated', 'butter', 'shortening', 'margarine',
+    'refined', 'vegetable oil', 'palm oil', 'canola oil', 'soybean oil',
+    'sunflower oil', 'corn oil', 'cottonseed oil', 'oil',
+  ];
 
-  // Calculate the Overall Health Score -- this is the one that is displayed to the user
-  static HealthScoreResult calculateHealthScore(off.Product product, UserPreferences userPrefs){
-    // Extract nutrient data
+  // Appendix A – Whole (+1). Not exhaustive; unknown ingredients score 0.
+  static const List<String> _wholeKeywords = [
+    'whole', 'oat', 'brown rice', 'quinoa', 'barley', 'bulgur', 'millet',
+    'rye', 'buckwheat', 'corn', 'bean', 'lentil', 'chickpea', 'pea', 'soy',
+    'almond', 'peanut', 'walnut', 'pecan', 'cashew', 'pistachio', 'hazelnut',
+    'nut', 'seed', 'flax', 'chia', 'sesame', 'sunflower', 'pumpkin',
+    'apple', 'banana', 'berry', 'strawberr', 'blueberr', 'raspberr', 'orange',
+    'lemon', 'lime', 'grape', 'mango', 'pineapple', 'peach', 'pear', 'cherry',
+    'date', 'raisin', 'fig', 'coconut', 'avocado', 'tomato', 'potato',
+    'carrot', 'spinach', 'kale', 'broccoli', 'cauliflower', 'cabbage',
+    'lettuce', 'onion', 'garlic', 'pepper', 'cucumber', 'celery', 'mushroom',
+    'zucchini', 'squash', 'beet', 'fruit', 'vegetable',
+    'chicken', 'beef', 'turkey', 'pork', 'fish', 'salmon', 'tuna', 'egg',
+    'milk', 'meat', 'lamb',
+  ];
+
+  // Section 3.5 – flagged additives (each category counts once).
+  static const Map<String, List<String>> _additiveFlags = {
+    'artificial': [
+      'artificial flavor', 'artificial flavour', 'artificial color',
+      'artificial colour', 'red 40', 'red 3', 'yellow 5', 'yellow 6',
+      'blue 1', 'blue 2', 'sucralose', 'aspartame', 'acesulfame', 'saccharin',
+    ],
+    'hydrogenated': ['partially hydrogenated'],
+    'hfcs': ['high fructose corn syrup', 'high-fructose corn syrup'],
+    'msg': ['monosodium glutamate'],
+  };
+
+  // Section 3.7.2 – λ table: [energy, protein, sugar]
+  static const Map<_Goal, List<double>> _lambda = {
+    _Goal.generalHealth: [-0.2, 0.2, -0.3],
+    _Goal.loseWeight: [-0.6, 0.2, -0.3],
+    _Goal.gainWeight: [0.5, 0.5, -0.2],
+  };
+
+  static const List<String> _glutenKeywords = [
+    'wheat', 'barley', 'rye', 'malt', 'spelt', 'semolina', 'farina', 'gluten',
+  ];
+
+  // ---------------------------------------------------------------------------
+  // Entry point
+  // ---------------------------------------------------------------------------
+
+  static HealthScoreResult calculateHealthScore(
+      off.Product product, UserPreferences userPrefs) {
+    final notes = <String>[];
     final nutrients = product.nutriments;
+
+    final ingredientsText = product.ingredientsText ?? '';
+    final ingredients = parseIngredients(ingredientsText);
+    final allergens = product.allergens?.ids ?? <String>[];
+    final dietFlags = _dietFlags(product, ingredientsText);
+
+    // No nutrient data → neutral result (matches old behavior).
     if (nutrients == null) {
-      // Return neutral score if no nutrient data
-      return HealthScoreResult(
-        overallScore: 0.5,
-        energyScore: 0.5,
-        macroScore: 0.5,
-        ingredientScore: 0.5,
-        nutritionScore: 0.5,
+      return _neutralResult(
+        'No nutrient data available.',
+        allergens,
+        dietFlags,
       );
     }
-    // Get calories per 100g
-    final calories = nutrients.getValue(off.Nutrient.energyKCal, off.PerSize.oneHundredGrams) ?? 0.0;
-    
-    // Calculate sub-scores
-    final energyScore = _calculateEnergyScore(calories, userPrefs);
-    final macroScore = _calculateMacroScore(nutrients, userPrefs);
-    final ingredientScore = _calculateIngredientScore(product);
-    final nutrientScore = _calculateNutrientDensityScore(nutrients, calories);
-    
-    // Calculate overall score
-    final overallScore = pow(energyScore, wE) * 
-                        pow(macroScore, wM) * 
-                        pow(ingredientScore, wQ) * 
-                        pow(nutrientScore, wN);
-    
+
+    // Calories per 100 g. Used as C (per 100 g is equivalent to per serving
+    // because every nutrient is rescaled by the same ratio) and as D.
+    final kcal100g =
+        nutrients.getValue(off.Nutrient.energyKCal, off.PerSize.oneHundredGrams);
+    if (kcal100g == null || kcal100g <= 0) {
+      return _neutralResult(
+        'Calories missing or zero; cannot score per 100 kcal.',
+        allergens,
+        dietFlags,
+      );
+    }
+
+    // --- Step 1: read & normalize ------------------------------------------
+    double? read(off.Nutrient n) =>
+        nutrients.getValue(n, off.PerSize.oneHundredGrams);
+
+    final fiber = read(off.Nutrient.fiber);
+    final protein = read(off.Nutrient.proteins);
+    final satFat = read(off.Nutrient.saturatedFat);
+
+    double? sugar = read(off.Nutrient.addedSugars);
+    if (sugar == null) {
+      sugar = read(off.Nutrient.sugars);
+      notes.add(sugar == null
+          ? 'Added sugars missing; treated as 0.'
+          : 'Added sugars missing; used total sugars.');
+    }
+
+    // OFF sodium is in grams. Fall back to salt / 2.5 if needed.
+    double? sodiumG = read(off.Nutrient.sodium);
+    if (sodiumG == null) {
+      final salt = read(off.Nutrient.salt);
+      if (salt != null) {
+        sodiumG = salt / 2.5;
+        notes.add('Sodium missing; derived from salt.');
+      }
+    }
+    final sodiumMg = sodiumG == null ? null : sodiumG * 1000.0;
+
+    if (fiber == null) notes.add('Fiber missing; treated as 0.');
+    if (protein == null) notes.add('Protein missing; treated as 0.');
+    if (satFat == null) notes.add('Saturated fat missing; treated as 0.');
+    if (sodiumMg == null) notes.add('Sodium missing; treated as 0.');
+
+    final fiber100 = normalizePer100Kcal(fiber ?? 0, kcal100g);
+    final sugar100 = normalizePer100Kcal(sugar ?? 0, kcal100g);
+    final satFat100 = normalizePer100Kcal(satFat ?? 0, kcal100g);
+    final sodium100 = normalizePer100Kcal(sodiumMg ?? 0, kcal100g);
+    final protein100 = normalizePer100Kcal(protein ?? 0, kcal100g);
+
+    // --- Step 3: N ----------------------------------------------------------
+    final n = nutrientBalanceScore(
+      fiber100: fiber100,
+      sugar100: sugar100,
+      satFat100: satFat100,
+      sodium100: sodium100,
+      protein100: protein100,
+    );
+
+    // --- Step 4: F ----------------------------------------------------------
+    if (ingredients.isEmpty) {
+      notes.add('Ingredient list missing; ingredient score neutral.');
+    }
+    final f = foodIngredientScore(ingredients);
+
+    // --- Step 5: S ----------------------------------------------------------
+    int? nova = product.novaGroup;
+    if (nova == null || nova < 1 || nova > 4) {
+      nova = ingredients.length >= 5 ? 4 : 3;
+      notes.add('NOVA group missing; estimated as group $nova.');
+    }
+    final s = processingScore(nova, ingredientsText);
+
+    // --- Step 6: B ----------------------------------------------------------
+    final b = baseQualityScore(n, f, s);
+
+    // --- Step 7: Δ ----------------------------------------------------------
+    final delta = goalAdjustment(
+      goal: _mapGoal(userPrefs.userWeightGoal),
+      kcalPer100g: kcal100g,
+      protein100: protein100,
+      sugar100: sugar100,
+    );
+
+    // --- Step 8: final ------------------------------------------------------
+    final total = _clip(b + delta, 0, 100);
+
     return HealthScoreResult(
-      overallScore: overallScore.toDouble(),
-      energyScore: energyScore,
-      macroScore: macroScore,
-      ingredientScore: ingredientScore,
-      nutritionScore: nutrientScore / 100.0,
+      overallScore: total / 100.0,
+      energyScore: _clip((delta + 12.0) / 24.0, 0, 1),
+      macroScore: s / 100.0,
+      ingredientScore: f / 100.0,
+      nutritionScore: n / 100.0,
+      score: total,
+      baseScore: b,
+      goalAdjustment: delta,
+      band: bandFor(total),
+      isEstimate: notes.isNotEmpty,
+      estimateNotes: notes,
+      allergens: allergens,
+      dietFlags: dietFlags,
     );
   }
 
-  // Calculate the Energy Ratio Subscore
-  static double _calculateEnergyScore(double calories, UserPreferences userPrefs) {
-    // Calculate Caloric Density
-    double dc = calories / 100.0;
+  // ---------------------------------------------------------------------------
+  // Step 1 – normalize
+  // ---------------------------------------------------------------------------
 
-    double adjustedKE = kE;
+  /// Formula 1: x100 = x × (100 ÷ C)
+  static double normalizePer100Kcal(double x, double calories) =>
+      x * (100.0 / calories);
 
-    // Calculate the weight based on the user's goals
-    if (userPrefs.userWeightGoal == WeightGoal.loseWeight) {
-      // weight gain tweak
-      adjustedKE = adjustedKE * 1.5;      // Note: 1.5 is subject to change and tweaking
-    }
-    else if (userPrefs.userWeightGoal == WeightGoal.maintainWeight) {
-      // maintanence tweak
-      adjustedKE = adjustedKE * 1.25;     // Note: 1.25 is subject to change and tweaking
-    }
-    // Otherwise user is losing weight and leave as default
+  // ---------------------------------------------------------------------------
+  // Step 3 – Nutrient Balance Score (0–100)
+  // ---------------------------------------------------------------------------
 
-    // Normalize to a score from 1-0
-    final double scoreEnergy = 1.0 / (1.0 + adjustedKE * dc);
+  static double pointsFiber(double x100) => 10.0 * min(x100 / 9.5, 1.0);
+  static double pointsSugar(double x100) => 10.0 * max(1.0 - x100 / 10.0, 0.0);
+  static double pointsSatFat(double x100) => 10.0 * max(1.0 - x100 / 5.0, 0.0);
+  static double pointsSodium(double x100) => 10.0 * max(1.0 - x100 / 225.0, 0.0);
+  static double pointsProtein(double x100) => 10.0 * min(x100 / 8.0, 1.0);
 
-    return scoreEnergy;
+  /// Formula 2: N = (sum of five points) ÷ 5 × 10
+  static double nutrientBalanceScore({
+    required double fiber100,
+    required double sugar100,
+    required double satFat100,
+    required double sodium100,
+    required double protein100,
+  }) {
+    final sum = pointsFiber(fiber100) +
+        pointsSugar(sugar100) +
+        pointsSatFat(satFat100) +
+        pointsSodium(sodium100) +
+        pointsProtein(protein100);
+    return sum / 5.0 * 10.0;
   }
 
-  // Calculate the Macro Ration Subscore
-  static double _calculateMacroScore(off.Nutriments nutrientFacts, UserPreferences userPrefs) {
-    // Get the foods macros
-    final carbs = nutrientFacts.getValue(off.Nutrient.carbohydrates, off.PerSize.oneHundredGrams);
-    final protein = nutrientFacts.getValue(off.Nutrient.proteins, off.PerSize.oneHundredGrams);
-    final fats = nutrientFacts.getValue(off.Nutrient.fat, off.PerSize.oneHundredGrams);
+  // ---------------------------------------------------------------------------
+  // Step 4 – Food Ingredient Score (0–100)
+  // ---------------------------------------------------------------------------
 
-    final totalMacros = carbs! + protein! + fats!;
-
-    // If there is not macro data return a neutral score of 0.5
-    if (totalMacros == 0.0) {
-      return 0.5;
+  /// Splits an ingredient string on top-level commas only, so
+  /// "flour (wheat, niacin), sugar" becomes ["flour (wheat, niacin)", "sugar"].
+  static List<String> parseIngredients(String text) {
+    if (text.trim().isEmpty) return [];
+    final cleaned = text.replaceAll('_', '').replaceAll('*', '');
+    final parts = <String>[];
+    final buf = StringBuffer();
+    int depth = 0;
+    for (final ch in cleaned.split('')) {
+      if (ch == '(' || ch == '[') depth++;
+      if ((ch == ')' || ch == ']') && depth > 0) depth--;
+      if ((ch == ',' || ch == ';') && depth == 0) {
+        parts.add(buf.toString());
+        buf.clear();
+      } else {
+        buf.write(ch);
+      }
     }
-
-    // Calculate macro percentages
-    final double fc = carbs / totalMacros;      // Percentage of the product that is carbs
-    final double fp = protein / totalMacros;    // Percentage of the product that is protein
-    final double ff = fats / totalMacros;       // Percentage of the product that is fat
-
-    // Calculate weighted distance D
-    double D = 0.0;
-    
-    // Carbs
-    final carbShortage = max(0.0, userPrefs.carbGoalPercentage - fc);
-    final carbSurplus = max(0.0, fc - userPrefs.carbGoalPercentage);
-    D += userPrefs.carbShortageWeight * pow(carbShortage, alpha) + 
-         userPrefs.carbSurplusWeight * carbSurplus;
-    
-    // Protein
-    final proteinShortage = max(0.0, userPrefs.proteinGoalPercentage - fp);
-    final proteinSurplus = max(0.0, fp - userPrefs.proteinGoalPercentage);
-    D += userPrefs.proteinShortageWeight * pow(proteinShortage, alpha) + 
-         userPrefs.proteinSurplusWeight * proteinSurplus;
-    
-    // Fat
-    final fatShortage = max(0.0, userPrefs.fatsGoalPercentage - ff);
-    final fatSurplus = max(0.0, ff - userPrefs.fatsGoalPercentage);
-    D += userPrefs.fatShortageWeight * pow(fatShortage, alpha) + 
-         userPrefs.fatSurplusWeight * fatSurplus;
-    
-    // Calculate maximum possible distance (worst case scenario)
-    // Worst case: all macros in one category (e.g., 100% carbs, 0% protein, 0% fat)
-    final Dmax = userPrefs.carbShortageWeight * pow(userPrefs.carbGoalPercentage, alpha) + 
-                 userPrefs.carbSurplusWeight * (1.0 - userPrefs.carbGoalPercentage) +
-                 userPrefs.proteinShortageWeight * pow(userPrefs.proteinGoalPercentage, alpha) +
-                 userPrefs.fatShortageWeight * pow(userPrefs.fatsGoalPercentage, alpha);
-    
-    // Macro score (normalized)
-    final sM = 1.0 - (D / Dmax);
-    
-    return sM.clamp(0.0, 1.0);
+    parts.add(buf.toString());
+    return parts
+        .map((e) => e.trim().replaceAll(RegExp(r'\.$'), '').trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
   }
 
-  // Calculate Ingredient Quality Subscore
-  static double _calculateIngredientScore(off.Product product) {
-    // Get ingredient list from the product
-    final ingredientsText = product.ingredientsText;
+  /// Returns +1 (whole), −1 (refined/processed) or 0 (neutral).
+  static int classifyIngredient(String raw) {
+    // Classify on the name only, not the sub-ingredients in parentheses.
+    final name = raw.split(RegExp(r'[\(\[]')).first.toLowerCase().trim();
+    if (name.isEmpty) return 0;
 
-    // Check if the food product does not have an ingredients list in the OFF database
-    if (ingredientsText == null || ingredientsText.isEmpty) {
-      return 0.5;       // If no ingredients list return a neutral score
+    bool hasAny(List<String> keys) => keys.any(name.contains);
+
+    if (name.contains('whole')) return 1; // "whole wheat flour", "whole grain"
+    if (name.contains('virgin') && name.contains('oil')) return 0;
+    if (hasAny(_neutralKeywords) && !hasAny(['sugar', 'oil', 'flour'])) {
+      return 0;
     }
-
-    // Parse ingredients list string into a list
-    List<String> ingredients = ingredientsText
-                                              .split(',')
-                                              .map((e) => e.trim())
-                                              .where((e) => e.isNotEmpty)
-                                              .toList();
-    // Check if there is an element in the list
-    if (ingredients.isEmpty) {
-      return 0.5;       // If there is no ingredients return and neutral score
-    }
-
-    double weightedRiskSum = 0.0;
-    double weightSum = 0.0;
-
-    for (int i = 0; i < ingredients.length; i++) {
-      // Risk score from 0-10
-      final ri = 5;       // TODO: Pull the risk score from the ingredient risk database (5 is a temporary neutral score for now)
-      
-      // Normal ri score to 0-1
-      final riHat = ri / 10.0;
-
-      // Calculate positional weight (earlier ingredients have higher emphasis)
-      final wi = pow(kQ, i).toDouble();
-
-      weightedRiskSum += wi *riHat;
-      weightSum += wi;
-    }
-
-    if (weightSum == 0) {
-      return 0.5;
-    }
-
-    // Calculate the ingredient quality subscore
-    final sQ = 1.0 - weightedRiskSum / weightSum;
-
-    // Clamp in case score falls outside of 0-1
-    return sQ.clamp(0.0, 1.0);
+    if (hasAny(_refinedKeywords)) return -1;
+    if (hasAny(_wholeKeywords)) return 1;
+    return 0;
   }
 
-  // Calculate the Nutrient Density Subscore
-  static double _calculateNutrientDensityScore(off.Nutriments nutrientFacts, double calories) {
-    print('\n=== DEBUG: Nutrient Density Score Calculation ===');
+  /// Formulas 3 & 4: R = Σ w·c over first three, F = 50 + (R ÷ W) × 50
+  static double foodIngredientScore(List<String> ingredients) {
+    if (ingredients.isEmpty) return 50.0;
+    const weights = [3, 2, 1];
+    final used = min(3, ingredients.length);
+    double r = 0;
+    double w = 0;
+    for (int i = 0; i < used; i++) {
+      r += weights[i] * classifyIngredient(ingredients[i]);
+      w += weights[i];
+    }
+    return 50.0 + (r / w) * 50.0;
+  }
 
-    // Daily Values (DV) - based on FDA recommendations for adults
-    final Map<off.Nutrient, double> dailyValues = {
-      // Macronutrients
-      off.Nutrient.proteins: 50.0,        // g
-      off.Nutrient.fiber: 28.0,           // g
-      
-      // Vitamins (in same units as OFF API returns)
-      off.Nutrient.vitaminA: 900.0,       // µg
-      off.Nutrient.vitaminB1: 1.2,        // mg
-      off.Nutrient.vitaminB2: 1.3,        // mg
-      off.Nutrient.pantothenicAcid: 16.0,       // mg (niacin)
-      off.Nutrient.vitaminB6: 1.7,        // mg
-      off.Nutrient.vitaminB9: 400.0,      // µg (folate)
-      off.Nutrient.vitaminB12: 2.4,       // µg
-      off.Nutrient.vitaminC: 90.0,        // mg
-      off.Nutrient.vitaminD: 20.0,        // µg
-      off.Nutrient.vitaminE: 15.0,        // mg
-      off.Nutrient.vitaminK: 120.0,       // µg
-      
-      // Minerals
-      off.Nutrient.calcium: 1300.0,       // mg
-      off.Nutrient.iron: 18.0,            // mg
-      off.Nutrient.magnesium: 420.0,      // mg
-      off.Nutrient.phosphorus: 1250.0,    // mg
-      off.Nutrient.potassium: 4700.0,     // mg
-      off.Nutrient.zinc: 11.0,            // mg
-      off.Nutrient.copper: 0.9,           // mg
-      off.Nutrient.manganese: 2.3,        // mg
-      off.Nutrient.selenium: 55.0,        // µg
+  // ---------------------------------------------------------------------------
+  // Step 5 – Processing Score (0–100)
+  // ---------------------------------------------------------------------------
+
+  static int countAdditiveFlags(String ingredientsText) {
+    final t = ingredientsText.toLowerCase();
+    int count = 0;
+    for (final keys in _additiveFlags.values) {
+      if (keys.any(t.contains)) count++;
+    }
+    return count;
+  }
+
+  /// Formula 5: S = max(base − 10·n, 0), deduction capped at 30.
+  static double processingScore(int novaGroup, String ingredientsText) {
+    const base = {1: 100.0, 2: 75.0, 3: 50.0, 4: 10.0};
+    final n = countAdditiveFlags(ingredientsText);
+    final deduction = min(10.0 * n, 30.0);
+    return max((base[novaGroup] ?? 50.0) - deduction, 0.0);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 6 – Base Quality Score
+  // ---------------------------------------------------------------------------
+
+  /// Formula 6: B = 0.7·N + 0.3·((F + S) ÷ 2)
+  static double baseQualityScore(double n, double f, double s) =>
+      0.7 * n + 0.3 * ((f + s) / 2.0);
+
+  // ---------------------------------------------------------------------------
+  // Step 7 – Goal Adjustment
+  // ---------------------------------------------------------------------------
+
+  static _Goal _mapGoal(WeightGoal g) {
+    switch (g) {
+      case WeightGoal.loseWeight:
+        return _Goal.loseWeight;
+      case WeightGoal.gainWeight:
+        return _Goal.gainWeight;
+      case WeightGoal.maintainWeight:
+        return _Goal.generalHealth;
+    }
+  }
+
+  /// Formula 7: Δ = 12 × tanh(λe·ae + λp·ap + λs·as)
+  static double goalAdjustment({
+    required _Goal goal,
+    required double kcalPer100g,
+    required double protein100,
+    required double sugar100,
+  }) {
+    final aE = _clip((kcalPer100g - 250.0) / 250.0, -1, 1);
+    final aP = _clip((protein100 - 4.0) / 4.0, -1, 1);
+    // Typo fix from the doc: sugar concern uses sugar, not protein.
+    final aS = _clip((sugar100 - 5.0) / 5.0, -1, 1);
+
+    final l = _lambda[goal]!;
+    return 12.0 * _tanh(l[0] * aE + l[1] * aP + l[2] * aS);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 8 – band
+  // ---------------------------------------------------------------------------
+
+  static String bandFor(double score) {
+    if (score >= 80) return 'Excellent';
+    if (score >= 60) return 'Good';
+    if (score >= 40) return 'Fair';
+    return 'Poor';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 2 – constraint flags (never scored)
+  // ---------------------------------------------------------------------------
+
+  static Map<String, DietStatus> _dietFlags(
+      off.Product product, String ingredientsText) {
+    final labels = (product.labelsTags ?? <String>[]).map((e) => e.toLowerCase());
+    final text = ingredientsText.toLowerCase();
+    final analysis = product.ingredientsAnalysisTags;
+
+    DietStatus vegan = DietStatus.unknown;
+    switch (analysis?.veganStatus) {
+      case off.VeganStatus.VEGAN:
+        vegan = DietStatus.yes;
+        break;
+      case off.VeganStatus.NON_VEGAN:
+        vegan = DietStatus.no;
+        break;
+      default:
+        break;
+    }
+
+    DietStatus vegetarian = DietStatus.unknown;
+    switch (analysis?.vegetarianStatus) {
+      case off.VegetarianStatus.VEGETARIAN:
+        vegetarian = DietStatus.yes;
+        break;
+      case off.VegetarianStatus.NON_VEGETARIAN:
+        vegetarian = DietStatus.no;
+        break;
+      default:
+        break;
+    }
+
+    DietStatus gluten = DietStatus.unknown;
+    if (_glutenKeywords.any(text.contains)) {
+      gluten = DietStatus.no;
+    } else if (labels.any((l) => l == 'en:gluten-free' || l == 'en:no-gluten')) {
+      gluten = DietStatus.yes;
+    }
+
+    // Halal / kosher only when OFF has a label; never guessed.
+    final halal =
+        labels.contains('en:halal') ? DietStatus.yes : DietStatus.unknown;
+    final kosher =
+        labels.contains('en:kosher') ? DietStatus.yes : DietStatus.unknown;
+
+    return {
+      'vegan': vegan,
+      'vegetarian': vegetarian,
+      'halal': halal,
+      'kosher': kosher,
+      'glutenFree': gluten,
     };
-    
-    double sumCappedContributions = 0.0;
-    int nutrientsAboveThreshold = 0;
-    int totalNutrients = dailyValues.length;
-
-    print('Total nutrients being evaluated: $totalNutrients');
-    
-    for (var entry in dailyValues.entries) {
-      final nutrient = entry.key;
-      final dv = entry.value;
-      
-      // Get nutrient amount per 100g
-      final amount = nutrientFacts.getValue(nutrient, off.PerSize.oneHundredGrams) ?? 0.0;
-      
-      // Calculate ratio (percent of daily value)
-      final ratio = amount / dv;
-      
-      // Cap contribution at 100% DV to prevent dominance
-      final cappedContribution = min(ratio, 1.0);
-      sumCappedContributions += cappedContribution;
-      
-      // Count nutrients that exceed 5% DV threshold
-      if (ratio > 0.05) {
-        nutrientsAboveThreshold++;
-      }
-
-      if (amount > 0) {
-        print('  ${nutrient.offTag}: amount=$amount, DV=$dv, ratio=${(ratio * 100).toStringAsFixed(2)}%, capped=${(cappedContribution * 100).toStringAsFixed(2)}%');
-      }
-    }
-
-    print('Sum of capped contributions: $sumCappedContributions');
-    print('Nutrients above 5% threshold: $nutrientsAboveThreshold');
-    
-    // Density component: average contribution per nutrient
-    final densityComponent = sumCappedContributions / totalNutrients;
-    print('Density component: $densityComponent (sum=$sumCappedContributions / total=$totalNutrients)');
-    
-    // Variety component: fraction of nutrients that meaningfully contribute
-    final varietyComponent = nutrientsAboveThreshold / totalNutrients;
-    print('Variety component: $varietyComponent (above threshold=$nutrientsAboveThreshold / total=$totalNutrients)');
-    
-    // Final nutrient score (0-100 scale)
-    final sN = 100.0 * densityComponent * varietyComponent;
-    print('Final nutrient score (sN): $sN (100 * $densityComponent * $varietyComponent)');
-    print('=== END DEBUG ===\n');
-    
-    return sN;
   }
 
-  // Get a color representing the health score
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  static HealthScoreResult _neutralResult(
+    String note,
+    List<String> allergens,
+    Map<String, DietStatus> dietFlags,
+  ) {
+    return HealthScoreResult(
+      overallScore: 0.5,
+      energyScore: 0.5,
+      macroScore: 0.5,
+      ingredientScore: 0.5,
+      nutritionScore: 0.5,
+      score: 50,
+      baseScore: 50,
+      goalAdjustment: 0,
+      band: 'Fair',
+      isEstimate: true,
+      estimateNotes: [note],
+      allergens: allergens,
+      dietFlags: dietFlags,
+    );
+  }
+
+  static double _clip(double v, double lo, double hi) =>
+      v < lo ? lo : (v > hi ? hi : v);
+
+  // dart:math has no tanh.
+  static double _tanh(double x) {
+    final e2x = exp(2.0 * x);
+    return (e2x - 1.0) / (e2x + 1.0);
+  }
+
+  // ---------------------------------------------------------------------------
+  // UI helpers (input is the 0–1 overallScore, as before)
+  // ---------------------------------------------------------------------------
+
   static String getScoreColor(double score) {
     if (score >= 0.8) return 'green';
     if (score >= 0.6) return 'lightgreen';
@@ -331,13 +578,7 @@ class HealthScoreCalculator {
     if (score >= 0.2) return 'orange';
     return 'red';
   }
-  
-  // Get a text description of the health score
-  static String getScoreDescription(double score) {
-    if (score >= 0.8) return 'Excellent';
-    if (score >= 0.6) return 'Good';
-    if (score >= 0.4) return 'Fair';
-    if (score >= 0.2) return 'Poor';
-    return 'Very Poor';
-  }
+
+  /// Uses the doc's four bands (Poor 0–39, Fair 40–59, Good 60–79, Excellent 80+).
+  static String getScoreDescription(double score) => bandFor(score * 100.0);
 }
