@@ -6,11 +6,12 @@ import 'services/openfoodfacts_service.dart';
 import 'services/health_score_calculator.dart';
 import 'services/database_helper.dart';
 import 'dart:convert';
+import 'package:intl/intl.dart' hide TextDirection;
 
 void main() async {
   // Ensure Flutter is initialized
   WidgetsFlutterBinding.ensureInitialized();
-
+  
   // Initialize the OpenFoodFacts API configuration
   OpenFoodFactsService.initialize();
   
@@ -28,7 +29,7 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color.fromRGBO(101, 215, 190, 1)),
         useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Salud Barcode Scanner Demo'),
+      home: const MyHomePage(title: 'Salude Barcode Scanner Demo'),
     );
   }
 }
@@ -43,12 +44,12 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  List<off.Product> scannedProducts = [];
+  List<ScannedProductRecord> scannedProducts = [];
   bool _isLoading = false;
   int _totalScans = 0;
   int _uniqueProducts = 0;
   final DatabaseHelper _dbHelper = DatabaseHelper();
-
+  
   // Placeholder user preferences for health score calculation
   final UserPreferences userPrefs = UserPreferences(
     carbGoalPercentage: 0.50,
@@ -56,7 +57,7 @@ class _MyHomePageState extends State<MyHomePage> {
     fatsGoalPercentage: 0.25,
     userWeightGoal: WeightGoal.gainWeight,
   );
-
+  
   @override
   void initState() {
     super.initState();
@@ -78,25 +79,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _addScannedProduct(off.Product product, double healthScore) async {
-    // Convert nutrients to JSON
-    final nutrientsJson = json.encode({
-      'energyKCal': product.nutriments?.getValue(off.Nutrient.energyKCal, off.PerSize.oneHundredGrams),
-      'proteins': product.nutriments?.getValue(off.Nutrient.proteins, off.PerSize.oneHundredGrams),
-      'carbohydrates': product.nutriments?.getValue(off.Nutrient.carbohydrates, off.PerSize.oneHundredGrams),
-      'fat': product.nutriments?.getValue(off.Nutrient.fat, off.PerSize.oneHundredGrams),
-      'fiber': product.nutriments?.getValue(off.Nutrient.fiber, off.PerSize.oneHundredGrams),
-    });
-    
-    final record = ScannedProductRecord(
-      barcode: product.barcode ?? 'unknown',
-      productName: product.productName ?? 'Unknown Product',
-      brand: product.brands,
-      imageUrl: product.imageFrontSmallUrl ?? product.imageFrontUrl,
-      nutrientsJson: nutrientsJson,
-      ingredientsText: product.ingredientsText,
-      healthScore: healthScore,
-      scannedAt: DateTime.now(),
-    );
+    final record = ScannedProductRecord.fromProduct(product, healthScore);
     await _dbHelper.insertScan(record);
     await _loadScannedProducts();
   }
@@ -153,8 +136,7 @@ class _MyHomePageState extends State<MyHomePage> {
         _addScannedProduct(product, healthScore.overallScore);
         // Debug: Print success
         print('DEBUG: Product found - ${product.productName}');
-      }
-      else {
+      } else {
         // Debug: Print not found
         print('DEBUG: Product not found for barcode: $barcode');
         
@@ -181,8 +163,8 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error fetching product: $e'),
-            duration: const Duration(seconds: 2),
+            content: Text('Error fetching product for barcode $barcode: $e'),
+            duration: const Duration(seconds: 3),
             backgroundColor: Colors.red,
           ),
         );
@@ -423,12 +405,12 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _showProductDetails(BuildContext context, off.Product product) {
-  // Calculate health score for detail view
+    // Calculate health score for detail view
     final healthScore = HealthScoreCalculator.calculateHealthScore(
       product,
       userPrefs,
     );
-
+    
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -449,7 +431,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   ),
                 ),
               const SizedBox(height: 16),
-
+              
               // Health Score Section
               Container(
                 padding: const EdgeInsets.all(12),
@@ -511,7 +493,7 @@ class _MyHomePageState extends State<MyHomePage> {
               ),
               
               const SizedBox(height: 16),
-
+              
               if (product.brands != null && product.brands!.isNotEmpty) ...[
                 const Text('Brand:', style: TextStyle(fontWeight: FontWeight.bold)),
                 Text(product.brands!),
@@ -567,7 +549,7 @@ class _MyHomePageState extends State<MyHomePage> {
       ),
     );
   }
-
+  
   Widget _buildScoreBar(String label, double score) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
@@ -622,6 +604,31 @@ class _MyHomePageState extends State<MyHomePage> {
     if (score >= 0.4) return Colors.yellow[700]!;
     if (score >= 0.2) return Colors.orange;
     return Colors.red;
+  }
+
+  String _formatTimestamp(DateTime timestamp) {
+    Duration difference = DateTime.now().difference(timestamp);
+
+    if (difference.inDays >= 7) {
+      //12/12/1999
+      return DateFormat('mm/dd/yyyy').format(timestamp);
+    }
+    else if (difference.inDays > 0) {
+      // x days ago
+      return difference.inDays.toString() + " days ago";
+    }
+    else if (difference.inHours > 0) {
+      // x hours ago
+      return difference.inHours.toString() + " hours ago";
+    }
+    else if (difference.inMinutes > 0) {
+      // x minutes ago
+      return difference.inMinutes.toString() + " minutes ago";
+    }
+    else {
+      // a few seconds ago
+      return "A few seconds ago";
+    }
   }
 
   Color _getNutriScoreColor(String grade) {
