@@ -11,6 +11,15 @@ All notable changes to this project's UI design will be documented in this file.
 
 ## 10-30-2026
 
+### Added
+- [Scanner] v1.0
+    - Drafted design and layout
+- [Search] v1.0
+    - Drafted design and layout for three stages:
+        - Initial
+        - Active
+        - Typing
+
 ### Changed
 - [Diary] Changed settings icon to ellipses
 - [History] Changed settings icon to ellipses
